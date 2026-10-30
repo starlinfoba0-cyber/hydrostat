@@ -87,7 +87,43 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+st.markdown("""
+<style>
 
+/* Véritable bouton d'ouverture du menu */
+button[data-testid="stExpandSidebarButton"] {
+    background-color: #172B4D !important;
+    border: 2px solid #06B6D4 !important;
+    border-radius: 12px !important;
+    width: 48px !important;
+    height: 48px !important;
+    min-width: 48px !important;
+    min-height: 48px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-shadow: 0 2px 8px rgba(23, 43, 77, 0.25) !important;
+}
+
+/* Icône des flèches */
+button[data-testid="stExpandSidebarButton"] span,
+button[data-testid="stExpandSidebarButton"] span * {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+}
+
+/* Version téléphone */
+@media (max-width: 768px) {
+    button[data-testid="stExpandSidebarButton"] {
+        width: 52px !important;
+        height: 52px !important;
+        min-width: 52px !important;
+        min-height: 52px !important;
+    }
+}
+
+</style>
+""", unsafe_allow_html=True)
 
 # Archive Open-Meteo : données ERA5 depuis 1950 (ERA5-Land),
 # publiées avec un délai de 5 à 7 jours
