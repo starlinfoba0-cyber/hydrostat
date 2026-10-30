@@ -19,9 +19,17 @@ from genie_civil import (
     intensite_projet,
     verifier_caniveau,
     largeur_minimale,
+    hauteur_normale,
+    pente_minimale,
     periode_retour_supportee
 )
-from secours import charger_secours, meta_secours, VILLE_SECOURS
+from secours import (
+    charger_secours,
+    meta_secours,
+    villes_secours,
+    nom_fichier_csv,
+    VILLES
+)
 from theme import (
     appliquer_theme,
     style_figure,
@@ -30,6 +38,7 @@ from theme import (
     logo_sidebar,
     puce_statut,
     carte_usage,
+    carte_travaux,
     nombre,
     ICE,
     AMBRE,
@@ -40,10 +49,13 @@ from chantier import (
     fenetre_jours_perdus,
     resume_fenetre,
     mediane_par_mois_de_demarrage,
+    classement_travaux,
+    TRAVAUX,
     NOMBRE_MIN_FENETRES
 )
 from tableau_bord import (
     MOIS,
+    MOIS_LONGS,
     agregats_mensuels,
     matrice_annee_mois,
     regime_mensuel,
@@ -84,6 +96,11 @@ DELAI_ARCHIVE_JOURS = 7
 DATE_MAX_ARCHIVE = date.today() - timedelta(days=DELAI_ARCHIVE_JOURS)
 
 
+def aller_a(page):
+    """Change de page (utilisé par les boutons de navigation)."""
+    st.session_state["menu"] = page
+
+
 def tracer(fig, **options):
     """Affiche une figure Plotly avec le style HYDROSTAT."""
     st.plotly_chart(style_figure(fig), theme=None, width="stretch")
@@ -93,7 +110,7 @@ def formater(valeur, unite="mm", decimales=2):
     """Affiche une valeur, ou 'n/a' si elle n'est pas définie."""
     if valeur is None:
         return "n/a"
-    return f"{valeur:.{decimales}f} {unite}"
+    return f"{nombre(valeur, decimales)} {unite}"
 
 
 def enregistrer_collecte(resultat, meta):
@@ -144,11 +161,12 @@ def bandeau_origine():
 
     if meta and meta.get("origine") == "secours":
         st.warning(
-            "⚠️ Jeu de données pré-collecté (fichier de secours) : "
+            "Jeu de données pré-collecté (fichier de secours) : "
             f"{meta['ville']}, du {meta['date_debut']} au "
             f"{meta['date_fin']}. Ce sont des données Open-Meteo "
-            "enregistrées à l'avance. Lancez une collecte pour "
-            "interroger Open-Meteo en direct."
+            "enregistrées à l'avance, disponibles uniquement pour : "
+            f"{', '.join(villes_secours())}. Lancez une collecte pour "
+            "interroger Open-Meteo en direct, pour la ville de votre choix."
         )
         return True
 
@@ -164,7 +182,7 @@ def tester_adequation(maxima, mu, beta, methode):
 def afficher_valeurs_extremes():
     """Page « Valeurs extrêmes » : maxima annuels, Gumbel, périodes de retour."""
 
-    st.title("📈 Valeurs extrêmes : loi de Gumbel et périodes de retour")
+    st.title("Valeurs extrêmes : loi de Gumbel et périodes de retour")
 
     st.markdown(
         "### De la pluie journalière maximale annuelle à la pluie de projet"
@@ -180,7 +198,7 @@ def afficher_valeurs_extremes():
 
     retenues, ecartees = maxima_annuels(st.session_state["donnees_valides"])
 
-    st.subheader("1️⃣ Maxima annuels")
+    st.subheader("1. Maxima annuels")
 
     st.write(
         "Pour chaque année civile suffisamment complète (au moins 90 % "
@@ -189,7 +207,7 @@ def afficher_valeurs_extremes():
 
     if ecartees:
         with st.expander(
-            f"⚠️ {len(ecartees)} année(s) écartée(s) : données incomplètes"
+            f"{len(ecartees)} année(s) écartée(s) : données incomplètes"
         ):
             st.dataframe(
                 pd.DataFrame(ecartees).rename(columns={
@@ -234,7 +252,7 @@ def afficher_valeurs_extremes():
 
     # ---------- 2. AJUSTEMENT ----------
 
-    st.subheader("2️⃣ Ajustement de la loi de Gumbel")
+    st.subheader("2. Ajustement de la loi de Gumbel")
 
     choix = st.radio(
         "Méthode d'estimation",
@@ -257,8 +275,8 @@ def afficher_valeurs_extremes():
     c1, c2, c3 = st.columns(3)
 
     c1.metric("Années utilisées", n)
-    c2.metric("Position μ", f"{mu:.2f} mm")
-    c3.metric("Échelle β", f"{beta:.2f} mm")
+    c2.metric("Position μ", f"{nombre(mu, 2)} mm")
+    c3.metric("Échelle β", f"{nombre(beta, 2)} mm")
 
     st.dataframe(
         pd.DataFrame({
@@ -278,14 +296,14 @@ def afficher_valeurs_extremes():
 
     # ---------- 3. ADEQUATION ----------
 
-    st.subheader("3️⃣ Adéquation du modèle")
+    st.subheader("3. Adéquation du modèle")
 
     test = tester_adequation(tuple(maxima), mu, beta, methode)
 
     d1, d2 = st.columns(2)
 
-    d1.metric("Statistique de Kolmogorov-Smirnov D", f"{test['statistique_ks']:.4f}")
-    d2.metric("p-value (simulation)", f"{test['p_value']:.3f}")
+    d1.metric("Statistique de Kolmogorov-Smirnov D", f"{nombre(test['statistique_ks'], 4)}")
+    d2.metric("p-value (simulation)", f"{nombre(test['p_value'], 3)}")
 
     if test["p_value"] >= 0.05:
         st.success("La loi de Gumbel n'est pas rejetée au seuil de 5 %.")
@@ -363,7 +381,7 @@ def afficher_valeurs_extremes():
 
     # ---------- 4. NIVEAUX DE RETOUR ET RISQUE ----------
 
-    st.subheader("4️⃣ Niveaux de retour et risque")
+    st.subheader("4. Niveaux de retour et risque")
 
     duree_vie = st.number_input(
         "Durée de vie de l'ouvrage (années)",
@@ -384,9 +402,9 @@ def afficher_valeurs_extremes():
             "Pluie journalière (mm)": round(mu + beta * y, 1),
             "IC 95 % bas (mm)": round(bas, 1),
             "IC 95 % haut (mm)": round(haut, 1),
-            "Probabilité annuelle de dépassement": f"{100 / periode:.1f} %",
+            "Probabilité annuelle de dépassement": f"{nombre(100 / periode, 1)} %",
             f"Risque sur {duree_vie} ans": (
-                f"{100 * risque_duree_vie(periode, duree_vie):.1f} %"
+                f"{nombre(100 * risque_duree_vie(periode, duree_vie), 1)} %"
             )
         })
 
@@ -398,7 +416,7 @@ def afficher_valeurs_extremes():
 
     # ---------- 5. PLUIE DE PROJET ----------
 
-    st.subheader("5️⃣ Pluie de projet pour un risque accepté")
+    st.subheader("5. Pluie de projet pour un risque accepté")
 
     risque_pct = st.slider(
         "Risque accepté de dépassement sur la durée de vie (%)",
@@ -412,14 +430,14 @@ def afficher_valeurs_extremes():
 
     e1, e2 = st.columns(2)
 
-    e1.metric("Période de retour requise", f"{periode_requise:,.0f} ans")
-    e2.metric("Pluie journalière de projet", f"{pluie_projet:.1f} mm")
+    e1.metric("Période de retour requise", f"{nombre(periode_requise)} ans")
+    e2.metric("Pluie journalière de projet", f"{nombre(pluie_projet, 1)} mm")
 
-    st.caption(f"IC 95 % de la pluie de projet : [{bas_p:.1f} ; {haut_p:.1f}] mm.")
+    st.caption(f"IC 95 % de la pluie de projet : [{nombre(bas_p, 1)} ; {nombre(haut_p, 1)}] mm.")
 
     if periode_requise > 3 * n:
         st.warning(
-            f"Extrapolation : une période de retour de {periode_requise:,.0f} ans "
+            f"Extrapolation : une période de retour de {nombre(periode_requise)} ans "
             f"est très supérieure à la durée observée ({n} ans). "
             "Le résultat est très incertain."
         )
@@ -435,7 +453,7 @@ def afficher_valeurs_extremes():
 
     # ---------- MÉTHODE ET FORMULES ----------
 
-    with st.expander("📘 Méthode et formules (démonstrations)"):
+    with st.expander("Méthode et formules (démonstrations)"):
 
         st.markdown(
             "**Modèle.** Le maximum annuel X de la pluie journalière suit "
@@ -547,15 +565,18 @@ PERIODES_RETOUR = [2, 5, 10, 20, 50, 100]
 def afficher_genie_civil():
     """Page « Génie Civil » : à quoi servent les données collectées ?"""
 
-    st.title("🏗️ Génie Civil : à quoi servent ces données ?")
+    st.title("Génie Civil : à quoi servent ces données ?")
 
-    st.markdown("### Des pluies observées aux décisions d'ingénieur")
+    st.markdown(
+        "Des pluies observées aux décisions d'ingénieur : "
+        "trois usages concrets des données collectées."
+    )
 
     u1, u2, u3 = st.columns(3)
 
     u1.markdown(
         carte_usage(
-            "💧", "Dimensionner",
+            "01", "Dimensionner",
             "Les maxima annuels donnent la pluie de projet pour une "
             "période de retour choisie : on en déduit le débit de pointe "
             "et la taille du caniveau."
@@ -565,7 +586,7 @@ def afficher_genie_civil():
 
     u2.markdown(
         carte_usage(
-            "🚧", "Planifier",
+            "02", "Planifier",
             "Le nombre de jours de forte pluie, mois par mois, indique "
             "quand démarrer le chantier et quelle marge de délai prévoir."
         ),
@@ -574,7 +595,7 @@ def afficher_genie_civil():
 
     u3.markdown(
         carte_usage(
-            "🏙️", "Anticiper",
+            "03", "Anticiper",
             "Comparer le ruissellement avant et après aménagement montre "
             "l'effet de l'imperméabilisation et le volume d'eau à gérer."
         ),
@@ -601,21 +622,21 @@ def afficher_genie_civil():
         retenues, _ = maxima_annuels(donnees_valides)
         annees = stats_pluie["nombre_jours"] / 365.25
 
-        st.subheader("🌧️ Contexte pluviométrique")
+        st.subheader("Contexte pluviométrique")
 
         c1, c2, c3, c4 = st.columns(4)
 
         c1.metric(
             "Pluie annuelle moyenne",
-            f"{stats_pluie['cumul'] / annees:,.0f} mm"
+            f"{nombre(stats_pluie['cumul'] / annees)} mm"
         )
         c2.metric(
             "Pluie journalière maximale",
-            f"{stats_pluie['maximum']:.1f} mm"
+            f"{nombre(stats_pluie['maximum'], 1)} mm"
         )
         c3.metric(
             f"Jours pluvieux (≥ {SEUIL_JOUR_PLUVIEUX:g} mm)",
-            stats_pluie["jours_pluvieux"]
+            nombre(stats_pluie["jours_pluvieux"])
         )
         c4.metric("Années complètes", len(retenues))
 
@@ -635,9 +656,12 @@ def afficher_genie_civil():
         )
 
 
-    onglet_drainage, onglet_chantier = st.tabs(
-        ["💧 Drainage pluvial", "🚧 Planification de chantier"]
+    onglet_synthese, onglet_drainage, onglet_chantier = st.tabs(
+        ["Synthèse du terrain", "Drainage pluvial", "Planification de chantier"]
     )
+
+    with onglet_synthese:
+        afficher_synthese(ajustement)
 
     with onglet_drainage:
         afficher_drainage(ajustement)
@@ -646,10 +670,188 @@ def afficher_genie_civil():
         afficher_chantier()
 
 
+def afficher_synthese(ajustement):
+    """Onglet « Synthèse du terrain » : ce qu'il faut retenir avant de lancer des travaux."""
+
+    if "donnees_reelles" not in st.session_state:
+        st.warning("Veuillez d'abord collecter des données.")
+        return
+
+    df = st.session_state["donnees_reelles"]
+    meta = st.session_state.get("meta")
+    ville = meta["ville"] if meta else "votre ville"
+    mois_courant = date.today().month
+
+    st.subheader(f"Si vous prenez un terrain à {ville} maintenant")
+
+    st.write(
+        "Quelques repères tirés des pluies observées, avant même de "
+        "dessiner le moindre ouvrage."
+    )
+
+    jours = len(df)
+    annees = jours / 365.25
+    cumul = float(df["Précipitations (mm)"].sum())
+    par_mois = jours_perdus_par_mois(df, 10.0)
+    regime = regime_mensuel(agregats_mensuels(df))
+
+    points = []
+
+    if annees >= 1 and bool(regime.notna().all()):
+
+        valeurs = [float(v) for v in regime.values]
+        plus = sorted(sorted(range(12), key=lambda m: valeurs[m])[-2:])
+
+        points.append(
+            f"Il tombe en moyenne **{nombre(cumul / annees)} mm** de pluie "
+            f"par an à {ville}. Les mois les plus pluvieux sont "
+            f"**{MOIS_LONGS[plus[0]]}** et **{MOIS_LONGS[plus[1]]}**."
+        )
+
+    else:
+
+        points.append(
+            f"Sur la période collectée ({jours} jours), il est tombé "
+            f"**{nombre(cumul)} mm** de pluie. Collectez au moins un an de "
+            "données pour voir les saisons."
+        )
+
+    if bool(par_mois.notna().all()):
+
+        classes = sorted(range(1, 13), key=lambda m: -par_mois[m])
+        rang = classes.index(mois_courant) + 1
+
+        if rang <= 3:
+            situation = "l'un des 3 mois les plus pluvieux de l'année"
+        elif rang >= 10:
+            situation = "l'un des 3 mois les plus secs de l'année"
+        else:
+            situation = "un mois de pluviosité intermédiaire"
+
+        points.append(
+            f"Nous sommes en **{MOIS_LONGS[mois_courant - 1]}**, "
+            f"{situation} : en moyenne "
+            f"**{nombre(float(par_mois[mois_courant]), 1)} jour(s)** avec au "
+            "moins 10 mm de pluie."
+        )
+
+    if ajustement is not None:
+
+        p10 = niveau_retour(ajustement["mu"], ajustement["beta"], 10)
+
+        points.append(
+            "Une pluie qui n'arrive qu'une fois tous les 10 ans atteint "
+            f"environ **{nombre(p10)} mm** en une journée : c'est la pluie "
+            "à prévoir pour dimensionner l'évacuation des eaux."
+        )
+
+    rapport = (
+        COEFFICIENTS_SURFACE["Béton"] / COEFFICIENTS_SURFACE["Sol naturel"]
+    )
+
+    points.append(
+        f"Un terrain bétonné fait ruisseler environ **{nombre(rapport, 1)} "
+        "fois plus** d'eau qu'un sol naturel : il faut prévoir où cette eau "
+        "va."
+    )
+
+    st.markdown("\n".join(f"- {p}" for p in points))
+
+    # ---------- Quels travaux, quand ? ----------
+
+    st.subheader("Quels travaux, et quand ?")
+
+    st.write(
+        "Une pluie trop forte arrête certains travaux. Pour chaque type de "
+        "travaux, le score indique la part des jours où la pluie ne bloque "
+        "pas le chantier."
+    )
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        mois_debut = st.selectbox(
+            "Démarrage des travaux (mois)",
+            list(range(1, 13)),
+            index=mois_courant - 1,
+            format_func=lambda m: MOIS_LONGS[m - 1].capitalize()
+        )
+
+    with c2:
+        duree = st.slider(
+            "Durée des travaux (mois)",
+            min_value=1,
+            max_value=12,
+            value=3
+        )
+
+    with st.expander("Seuils de pluie par type de travaux (modifiables)"):
+
+        st.caption(
+            "Pluie journalière au-dessus de laquelle ces travaux sont "
+            "arrêtés. Valeurs indicatives choisies pour l'exemple : à "
+            "adapter au chantier."
+        )
+
+        seuils = {}
+
+        for nom, seuil_defaut, _ in TRAVAUX:
+            seuils[nom] = st.number_input(
+                f"{nom} (mm/jour)",
+                min_value=0.5,
+                max_value=100.0,
+                value=seuil_defaut,
+                step=0.5,
+                key=f"seuil_{nom}"
+            )
+
+    classement = classement_travaux(df, mois_debut, duree, seuils)
+
+    if all(r["score"] is None for r in classement):
+
+        st.info(
+            "Données insuffisantes pour classer les travaux : collectez au "
+            "moins un an de données."
+        )
+
+    else:
+
+        for rang, r in enumerate(classement, start=1):
+
+            if r["score"] is None:
+                detail = "Données insuffisantes pour ce type de travaux."
+            else:
+                detail = (
+                    f"Environ {nombre(r['perdus'])} jour(s) bloqué(s) sur "
+                    f"{nombre(r['jours_fenetre'])} avec une pluie d'au moins "
+                    f"{nombre(r['seuil'], 1)} mm ({r['methode']})."
+                )
+
+            st.markdown(
+                carte_travaux(
+                    rang,
+                    r["nom"],
+                    r["score"],
+                    r["niveau"],
+                    detail,
+                    r["mesure"]
+                ),
+                unsafe_allow_html=True
+            )
+
+        st.caption(
+            "Score = part des jours où la pluie ne bloque pas ces travaux. "
+            "Favorable : 75 et plus ; sous conditions : 50 à 74 ; "
+            "déconseillé : moins de 50. Scores indicatifs fondés sur des "
+            "règles simplifiées : ils ne remplacent ni la prévision météo "
+            "ni l'avis du conducteur de travaux."
+        )
+
+
 def afficher_chantier():
     """Onglet « Planification de chantier » : combien de jours la pluie fait-elle perdre ?"""
 
-    st.subheader("🚧 Quand lancer le chantier ?")
+    st.subheader("Quand lancer le chantier ?")
 
     st.write(
         "Une forte pluie arrête les terrassements, le bétonnage ou les "
@@ -704,15 +906,15 @@ def afficher_chantier():
 
     m1.metric(
         "Jours perdus par an (moyenne)",
-        f"{disponibles.sum():.0f} j"
+        f"{nombre(disponibles.sum(), 0)} j"
     )
     m2.metric(
         "Mois le plus favorable",
-        f"{MOIS[mois_favorable - 1]} ({disponibles[mois_favorable]:.1f} j)"
+        f"{MOIS[mois_favorable - 1]} ({nombre(disponibles[mois_favorable], 1)} j)"
     )
     m3.metric(
         "Mois le plus défavorable",
-        f"{MOIS[mois_defavorable - 1]} ({disponibles[mois_defavorable]:.1f} j)"
+        f"{MOIS[mois_defavorable - 1]} ({nombre(disponibles[mois_defavorable], 1)} j)"
     )
 
     mois_du_chantier = {
@@ -744,7 +946,7 @@ def afficher_chantier():
 
     # ---------- Fenêtre du chantier ----------
 
-    st.subheader("📅 Votre chantier")
+    st.subheader("Votre chantier")
 
     valeurs = fenetre_jours_perdus(df, seuil, mois_debut, duree)
     resume = resume_fenetre(valeurs)
@@ -761,20 +963,20 @@ def afficher_chantier():
 
         w1, w2, w3 = st.columns(3)
 
-        w1.metric("Jours perdus (cas médian)", f"{resume['mediane']:.0f} j")
+        w1.metric("Jours perdus (cas médian)", f"{nombre(resume['mediane'], 0)} j")
         w2.metric(
             "Marge prudente (8 années sur 10)",
-            f"{resume['p80']:.0f} j"
+            f"{nombre(resume['p80'], 0)} j"
         )
-        w3.metric("Pire cas observé", f"{resume['maximum']:.0f} j")
+        w3.metric("Pire cas observé", f"{nombre(resume['maximum'], 0)} j")
 
         st.success(
             f"Un chantier de {duree} mois démarrant en "
             f"{MOIS[mois_debut - 1]} perd en général environ "
-            f"{resume['mediane']:.0f} jours "
-            f"({100 * resume['mediane'] / jours_fenetre:.0f} % du temps). "
+            f"{nombre(resume['mediane'], 0)} jours "
+            f"({nombre(100 * resume['mediane'] / jours_fenetre, 0)} % du temps). "
             f"Dans 8 années sur 10, ce nombre reste au plus égal à "
-            f"{resume['p80']:.0f} jours : c'est la marge à prévoir dans "
+            f"{nombre(resume['p80'], 0)} jours : c'est la marge à prévoir dans "
             "le planning."
         )
 
@@ -791,7 +993,7 @@ def afficher_chantier():
         meilleur = int(medianes.idxmin())
         pire = int(medianes.idxmax())
 
-        st.subheader("🧭 Quel mois choisir pour démarrer ?")
+        st.subheader("Quel mois choisir pour démarrer ?")
 
         fig_demarrage = go.Figure(
             go.Bar(
@@ -817,9 +1019,9 @@ def afficher_chantier():
 
         st.info(
             f"Pour {duree} mois de travaux, le meilleur mois de démarrage "
-            f"est {MOIS[meilleur - 1]} (environ {medianes[meilleur]:.0f} "
+            f"est {MOIS[meilleur - 1]} (environ {nombre(medianes[meilleur], 0)} "
             f"jours perdus) ; le moins favorable est {MOIS[pire - 1]} "
-            f"(environ {medianes[pire]:.0f} jours)."
+            f"(environ {nombre(medianes[pire], 0)} jours)."
         )
 
     st.caption(
@@ -834,7 +1036,7 @@ def afficher_drainage(ajustement):
 
     # ---------- Paramètres du projet ----------
 
-    st.subheader("🧭 Paramètres du projet")
+    st.subheader("Paramètres du projet")
 
     pluie_manuelle = None
     intensite_saisie = None
@@ -943,7 +1145,7 @@ def afficher_drainage(ajustement):
             value=70.0
         )
 
-    with st.expander("⚙️ Hypothèse : de la pluie journalière à l'intensité"):
+    with st.expander("Hypothèse : de la pluie journalière à l'intensité"):
 
         st.write(
             "La pluie de projet est une pluie journalière (24 h). Pour "
@@ -1026,27 +1228,27 @@ def afficher_drainage(ajustement):
 
     st.divider()
 
-    st.subheader("1️⃣ Pluie de projet")
+    st.subheader("1. Pluie de projet")
 
     r1, r2, r3 = st.columns(3)
 
     r1.metric(
         f"Pluie journalière (T = {periode} ans)",
-        f"{pluie_projet:.1f} mm"
+        f"{nombre(pluie_projet, 1)} mm"
     )
     r2.metric(
         f"Intensité sur {tc_min:g} min",
-        f"{intensite:.1f} mm/h"
+        f"{nombre(intensite, 1)} mm/h"
     )
     r3.metric(
         f"Risque de dépassement en {duree_vie} ans",
-        f"{100 * risque:.1f} %"
+        f"{nombre(100 * risque, 1)} %"
     )
 
     if bas_p is not None:
         st.caption(
             f"Pluie estimée à partir de {ajustement['n']} maxima annuels ; "
-            f"intervalle de confiance à 95 % : [{bas_p:.1f} ; {haut_p:.1f}] mm."
+            f"intervalle de confiance à 95 % : [{nombre(bas_p, 1)} ; {nombre(haut_p, 1)}] mm."
         )
     else:
         st.caption(
@@ -1057,18 +1259,18 @@ def afficher_drainage(ajustement):
 
     st.caption(
         f"Un ouvrage dimensionné pour une période de retour de {periode} ans "
-        f"a {100 * risque:.0f} % de chances de voir cette pluie dépassée au "
+        f"a {nombre(100 * risque, 0)} % de chances de voir cette pluie dépassée au "
         f"moins une fois pendant {duree_vie} ans."
     )
 
     # ---------- 2. Débit de pointe ----------
 
-    st.subheader("2️⃣ Débit de pointe (méthode rationnelle)")
+    st.subheader("2. Débit de pointe (méthode rationnelle)")
 
     d1, d2 = st.columns(2)
 
-    d1.metric("Débit de pointe", f"{debit_pointe:.3f} m³/s")
-    d2.metric("Soit", f"{debit_pointe * 1000:,.0f} L/s")
+    d1.metric("Débit de pointe", f"{nombre(debit_pointe, 3)} m³/s")
+    d2.metric("Soit", f"{nombre(debit_pointe * 1000)} L/s")
 
     st.caption(
         "Q = C × i × A / 360 (C sans unité, i en mm/h, A en ha, Q en m³/s)."
@@ -1076,33 +1278,33 @@ def afficher_drainage(ajustement):
 
     # ---------- 3. Caniveau ----------
 
-    st.subheader("3️⃣ Vérification du caniveau")
+    st.subheader("3. Vérification du caniveau")
 
     k1, k2, k3 = st.columns(3)
 
     k1.metric(
         "Capacité (à pleine hauteur)",
-        f"{caniveau['capacite']:.3f} m³/s"
+        f"{nombre(caniveau['capacite'], 3)} m³/s"
     )
-    k2.metric("Débit de pointe", f"{debit_pointe:.3f} m³/s")
+    k2.metric("Débit de pointe", f"{nombre(debit_pointe, 3)} m³/s")
     k3.metric(
         "Taux de remplissage",
-        f"{100 * caniveau['taux_remplissage']:.0f} %"
+        f"{nombre(100 * caniveau['taux_remplissage'], 0)} %"
     )
 
     if caniveau["verdict"] == "suffisant":
         st.success(
-            "✅ Caniveau suffisant : le débit de pointe reste sous 80 % "
+            "Caniveau suffisant : le débit de pointe reste sous 80 % "
             "de la capacité."
         )
     elif caniveau["verdict"] == "limite":
         st.warning(
-            "⚠️ Caniveau à la limite : le débit de pointe dépasse 80 % "
+            "Caniveau à la limite : le débit de pointe dépasse 80 % "
             "de la capacité, sans la dépasser."
         )
     else:
         st.error(
-            "❌ Caniveau insuffisant : le débit de pointe dépasse sa "
+            "Caniveau insuffisant : le débit de pointe dépasse sa "
             "capacité."
         )
 
@@ -1112,12 +1314,12 @@ def afficher_drainage(ajustement):
 
         h1.metric(
             "Hauteur d'eau pour le débit de pointe",
-            f"{caniveau['hauteur_eau']:.2f} m"
+            f"{nombre(caniveau['hauteur_eau'], 2)} m"
         )
 
         if caniveau["vitesse"] is not None:
 
-            h2.metric("Vitesse d'écoulement", f"{caniveau['vitesse']:.2f} m/s")
+            h2.metric("Vitesse d'écoulement", f"{nombre(caniveau['vitesse'], 2)} m/s")
 
             if caniveau["vitesse"] < 0.6:
                 st.info(
@@ -1137,23 +1339,48 @@ def afficher_drainage(ajustement):
 
     else:
 
+        st.markdown("**Mesures possibles :**")
+
+        mesures = []
+
         try:
-            b_min = largeur_minimale(
-                debit_pointe,
-                hauteur,
-                pente,
-                strickler
-            )
-            st.info(
-                f"Pour une hauteur utile de {hauteur:g} m, il faudrait une "
-                f"largeur d'au moins {math.ceil(b_min * 20) / 20:.2f} m "
-                "(arrondie au 5 cm supérieur)."
+            b_min = largeur_minimale(debit_pointe, hauteur, pente, strickler)
+            mesures.append(
+                "élargir le caniveau à au moins "
+                f"{nombre(math.ceil(b_min * 20) / 20, 2)} m "
+                "(hauteur utile inchangée) ;"
             )
         except ValueError:
-            st.info(
-                "Aucune largeur raisonnable ne suffit pour cette hauteur : "
-                "augmentez la hauteur utile ou la pente."
+            pass
+
+        try:
+            h_min = hauteur_normale(
+                debit_pointe, largeur, pente, strickler, hauteur_max=20.0
             )
+            mesures.append(
+                "ou l'approfondir : hauteur utile d'au moins "
+                f"{nombre(math.ceil(h_min * 20) / 20, 2)} m "
+                "(largeur inchangée) ;"
+            )
+        except ValueError:
+            pass
+
+        try:
+            i_min = pente_minimale(debit_pointe, largeur, hauteur, strickler)
+            mesures.append(
+                f"ou augmenter la pente à au moins {nombre(i_min, 4)} m/m"
+                + (" (pente très forte, peu réaliste)" if i_min > 0.05 else "")
+                + " ;"
+            )
+        except ValueError:
+            pass
+
+        mesures.append(
+            "ou réduire le débit à évacuer : bassin de rétention, noues "
+            "d'infiltration, surfaces perméables."
+        )
+
+        st.markdown("\n".join(f"- {m}" for m in mesures))
 
     hauteurs = [hauteur * k / 40 for k in range(1, 41)]
 
@@ -1193,7 +1420,7 @@ def afficher_drainage(ajustement):
 
     if ajustement is not None and intensite_saisie is None:
 
-        st.subheader("4️⃣ Jusqu'à quelle période de retour le caniveau tient-il ?")
+        st.subheader("4. Jusqu'à quelle période de retour le caniveau tient-il ?")
 
         lignes = []
 
@@ -1233,7 +1460,7 @@ def afficher_drainage(ajustement):
                 "Intensité (mm/h)": [round(i, 1) for t, p, i, q in lignes],
                 "Débit de pointe (m³/s)": [round(q, 3) for t, p, i, q in lignes],
                 "Caniveau": [
-                    "✅ suffisant" if q <= caniveau["capacite"] else "❌ dépassé"
+                    "suffisant" if q <= caniveau["capacite"] else "dépassé"
                     for t, p, i, q in lignes
                 ]
             }),
@@ -1267,11 +1494,11 @@ def afficher_drainage(ajustement):
 
     # ---------- 5. Volume ruisselé ----------
 
-    st.subheader("5️⃣ Volume d'eau ruisselé")
+    st.subheader("5. Volume d'eau ruisselé")
 
     st.metric(
         "Volume ruisselé par la pluie journalière de projet",
-        f"{volume:,.0f} m³"
+        f"{nombre(volume)} m³"
     )
 
     st.caption(
@@ -1281,7 +1508,7 @@ def afficher_drainage(ajustement):
 
     # ---------- 6. Effet de l'aménagement ----------
 
-    st.subheader("6️⃣ Effet de l'aménagement : avant / après")
+    st.subheader("6. Effet de l'aménagement : avant / après")
 
     c_avant = COEFFICIENTS_SURFACE["Sol naturel"]
 
@@ -1297,37 +1524,37 @@ def afficher_drainage(ajustement):
     if q_avant > 0:
         e1.metric(
             "Débit de pointe : avant → après",
-            f"{q_avant:.3f} → {debit_pointe:.3f} m³/s",
+            f"{nombre(q_avant, 3)} → {nombre(debit_pointe, 3)} m³/s",
             delta=f"{100 * (debit_pointe / q_avant - 1):+.0f} %",
             delta_color="inverse"
         )
         e2.metric(
             "Volume ruisselé : avant → après",
-            f"{v_avant:,.0f} → {volume:,.0f} m³",
-            delta=f"{volume - v_avant:+,.0f} m³",
+            f"{nombre(v_avant)} → {nombre(volume)} m³",
+            delta=f"{'+' if volume >= v_avant else '-'}{nombre(abs(volume - v_avant))} m³",
             delta_color="inverse"
         )
 
         if coefficient > c_avant:
             st.info(
-                f"En passant d'un sol naturel (C = {c_avant:.2f}) à "
-                f"« {type_surface} » (C = {coefficient:.2f}), le "
-                f"ruissellement est multiplié par {coefficient / c_avant:.1f}. "
+                f"En passant d'un sol naturel (C = {nombre(c_avant, 2)}) à "
+                f"« {type_surface} » (C = {nombre(coefficient, 2)}), le "
+                f"ruissellement est multiplié par {nombre(coefficient / c_avant, 1)}. "
                 f"L'eau supplémentaire à gérer pour la pluie journalière de "
-                f"projet est d'environ {volume - v_avant:,.0f} m³ : "
+                f"projet est d'environ {nombre(volume - v_avant)} m³ : "
                 "c'est ce qui justifie un réseau de drainage et, "
                 "souvent, un bassin de rétention."
             )
         else:
             st.info(
-                f"Cette surface (C = {coefficient:.2f}) ruisselle moins "
-                f"qu'un sol naturel (C = {c_avant:.2f}) : "
+                f"Cette surface (C = {nombre(coefficient, 2)}) ruisselle moins "
+                f"qu'un sol naturel (C = {nombre(c_avant, 2)}) : "
                 "l'aménagement ne crée pas de ruissellement supplémentaire."
             )
 
     # ---------- Fiche de calcul ----------
 
-    st.subheader("📄 Fiche de calcul")
+    st.subheader("Fiche de calcul")
 
     meta = st.session_state.get("meta")
 
@@ -1348,33 +1575,33 @@ def afficher_drainage(ajustement):
     lignes_fiche += [
         ("Bassin versant", "Superficie", f"{surface_ha:g}", "ha"),
         ("Bassin versant", "Type de surface", type_surface, ""),
-        ("Bassin versant", "Coefficient de ruissellement C", f"{coefficient:.2f}", ""),
+        ("Bassin versant", "Coefficient de ruissellement C", f"{nombre(coefficient, 2)}", ""),
         ("Bassin versant", "Temps de concentration", f"{tc_min:g}", "min"),
         ("Pluie de projet", "Période de retour T", f"{periode}", "ans"),
         ("Pluie de projet", "Durée de vie de l'ouvrage", f"{duree_vie}", "ans"),
         ("Pluie de projet", "Source de la pluie", source_pluie, ""),
-        ("Pluie de projet", "Pluie journalière", f"{pluie_projet:.1f}", "mm"),
-        ("Pluie de projet", "Intensité", f"{intensite:.1f}", "mm/h"),
+        ("Pluie de projet", "Pluie journalière", f"{nombre(pluie_projet, 1)}", "mm"),
+        ("Pluie de projet", "Intensité", f"{nombre(intensite, 1)}", "mm/h"),
         (
             "Pluie de projet",
             "Risque de dépassement sur la durée de vie",
-            f"{100 * risque:.1f}",
+            f"{nombre(100 * risque, 1)}",
             "%"
         ),
         ("Caniveau", "Largeur", f"{largeur:g}", "m"),
         ("Caniveau", "Hauteur utile", f"{hauteur:g}", "m"),
         ("Caniveau", "Pente", f"{pente:g}", "m/m"),
         ("Caniveau", "Coefficient de Strickler", f"{strickler:g}", ""),
-        ("Résultats", "Débit de pointe", f"{debit_pointe:.3f}", "m³/s"),
-        ("Résultats", "Capacité du caniveau", f"{caniveau['capacite']:.3f}", "m³/s"),
+        ("Résultats", "Débit de pointe", f"{nombre(debit_pointe, 3)}", "m³/s"),
+        ("Résultats", "Capacité du caniveau", f"{nombre(caniveau['capacite'], 3)}", "m³/s"),
         (
             "Résultats",
             "Taux de remplissage",
-            f"{100 * caniveau['taux_remplissage']:.0f}",
+            f"{nombre(100 * caniveau['taux_remplissage'], 0)}",
             "%"
         ),
         ("Résultats", "Verdict", caniveau["verdict"], ""),
-        ("Résultats", "Volume ruisselé", f"{volume:.0f}", "m³")
+        ("Résultats", "Volume ruisselé", f"{nombre(volume, 0)}", "m³")
     ]
 
     fiche = pd.DataFrame(
@@ -1385,7 +1612,7 @@ def afficher_drainage(ajustement):
     st.dataframe(fiche, width="stretch", hide_index=True)
 
     st.download_button(
-        "📥 Télécharger la fiche de calcul (CSV)",
+        "Télécharger la fiche de calcul (CSV)",
         data=fiche.to_csv(index=False).encode("utf-8-sig"),
         file_name="hydrostat_fiche_de_calcul.csv",
         mime="text/csv"
@@ -1415,16 +1642,17 @@ st.sidebar.markdown(logo_sidebar(), unsafe_allow_html=True)
 menu = st.sidebar.radio(
     "NAVIGATION",
     [
-        "🏠 Tableau de bord",
-        "🌍 Collecte des données",
-        "📋 Données brutes",
-        "🧹 Qualité des données",
-        "📊 Statistiques",
-        "🎲 Probabilités",
-        "📐 Inférence",
-        "📈 Valeurs extrêmes",
-        "🏗️ Génie Civil"
-    ]
+        "Tableau de bord",
+        "Collecte des données",
+        "Données brutes",
+        "Qualité des données",
+        "Statistiques",
+        "Probabilités",
+        "Inférence",
+        "Valeurs extrêmes",
+        "Génie Civil"
+    ],
+    key="menu"
 )
 
 
@@ -1495,48 +1723,9 @@ st.sidebar.caption("HYDROSTAT · Version 1.0 · ENSPY")
 # TABLEAU DE BORD
 # ==========================================
 
-if menu == "🏠 Tableau de bord":
+if menu == "Tableau de bord":
 
     meta = st.session_state.get("meta")
-
-    if mode_donnees == "Données réelles" and meta:
-
-        en_secours = meta.get("origine") == "secours"
-
-        puces = [
-            (f"📍 {meta['ville']}", ""),
-            (f"📅 {meta['date_debut']} → {meta['date_fin']}", ""),
-            (
-                "Pré-collecté" if en_secours else "Données en direct",
-                "alerte" if en_secours else "ok"
-            )
-        ]
-
-    else:
-        puces = [("Mode démonstration", "alerte")]
-
-    st.markdown(
-        entete(
-            "HYDROSTAT",
-            "Analyse des pluies et dimensionnement du drainage pluvial",
-            puces
-        ),
-        unsafe_allow_html=True
-    )
-
-    if mode_donnees == "Données réelles":
-        bandeau_origine()
-    else:
-        st.info(
-            "Mode démonstration : les données affichées "
-            "sont fictives et servent uniquement "
-            "à tester l'interface."
-        )
-        erreur_secours = st.session_state.get("secours_erreur")
-        if erreur_secours:
-            st.caption(f"Jeu de secours non chargé : {erreur_secours}")
-
-    # ---------- Indicateurs ----------
 
     pluies = donnees["Précipitations (mm)"].dropna()
     nb_jours = len(pluies)
@@ -1545,20 +1734,68 @@ if menu == "🏠 Tableau de bord":
     pluvieux = int((pluies >= SEUIL_JOUR_PLUVIEUX).sum())
     jour_max = donnees.loc[pluies.idxmax()]
 
-    k1, k2, k3, k4 = st.columns(4)
+    duree_texte = (
+        f"{nombre(annees, 0)} ans" if annees >= 1 else f"{nb_jours} jours"
+    )
+
+    if mode_donnees == "Données réelles" and meta:
+
+        origine = (
+            "Données pré-collectées."
+            if meta.get("origine") == "secours"
+            else "Données collectées en direct."
+        )
+
+        surtitre = (
+            f"{meta['ville']} · "
+            f"{meta['date_debut'][:4]}–{meta['date_fin'][:4]}"
+        )
+        titre = f"Pluviométrie à {meta['ville']}"
+        sous_titre = (
+            f"{duree_texte} de pluies journalières issues d'Open-Meteo "
+            f"(réanalyse ERA5). {origine}"
+        )
+
+    else:
+
+        surtitre = "Mode démonstration"
+        titre = "Pluviométrie"
+        sous_titre = (
+            "Données fictives pour tester l'interface : lancez une "
+            "collecte pour travailler sur de vraies données."
+        )
+
+    st.markdown(entete(surtitre, titre, sous_titre), unsafe_allow_html=True)
+
+    st.caption(
+        "Villes disponibles : " + ", ".join(VILLES) + ". "
+        "Pour analyser une autre ville, lancez une collecte."
+    )
+
+    if mode_donnees == "Données réelles":
+        bandeau_origine()
+    else:
+        erreur_secours = st.session_state.get("secours_erreur")
+        if erreur_secours:
+            st.caption(f"Jeu de secours non chargé : {erreur_secours}")
+
+    # ---------- Trois chiffres clés ----------
+
+    k1, k2, k3 = st.columns(3)
 
     if annees >= 1:
         k1.markdown(
             carte_kpi(
-                "🌧️", "Pluie annuelle moyenne",
-                nombre(cumul / annees), "mm/an", f"sur {annees:.1f} ans"
+                "Pluie annuelle moyenne",
+                nombre(cumul / annees), "mm/an",
+                f"sur {nombre(annees, 1)} ans"
             ),
             unsafe_allow_html=True
         )
     else:
         k1.markdown(
             carte_kpi(
-                "🌧️", "Cumul de la période",
+                "Cumul de la période",
                 nombre(cumul, 1), "mm", f"{nb_jours} jours"
             ),
             unsafe_allow_html=True
@@ -1566,190 +1803,98 @@ if menu == "🏠 Tableau de bord":
 
     k2.markdown(
         carte_kpi(
-            "☔", "Jours pluvieux",
-            nombre(pluvieux), "",
-            f"{100 * pluvieux / nb_jours:.0f} % des jours (≥ {SEUIL_JOUR_PLUVIEUX:g} mm)",
-            "bleu"
+            "Journée la plus pluvieuse",
+            nombre(float(pluies.max()), 1), "mm",
+            f"le {jour_max['Date']:%d/%m/%Y}"
         ),
         unsafe_allow_html=True
     )
 
     k3.markdown(
         carte_kpi(
-            "⚡", "Pluie journalière maximale",
-            f"{pluies.max():.1f}", "mm",
-            f"le {jour_max['Date']:%d/%m/%Y}",
-            "ambre"
+            "Jours de pluie",
+            nombre(pluvieux), "",
+            f"{nombre(100 * pluvieux / nb_jours, 0)} % des jours "
+            f"(≥ {SEUIL_JOUR_PLUVIEUX:g} mm)"
         ),
         unsafe_allow_html=True
     )
 
-    k4.markdown(
-        carte_kpi(
-            "🗂️", "Observations",
-            nombre(nb_jours), "jours", f"{annees:.1f} an(s) de données"
-        ),
-        unsafe_allow_html=True
-    )
+    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
 
-    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+    # ---------- Un seul graphique : le rythme des saisons ----------
 
-    # ---------- Graphiques ----------
+    regime = regime_mensuel(agregats_mensuels(donnees))
 
-    mensuel = agregats_mensuels(donnees)
-    matrice = matrice_annee_mois(mensuel)
-    regime = regime_mensuel(mensuel)
+    st.subheader("Quand pleut-il ?")
 
     gauche, droite = st.columns([2, 1])
 
     with gauche:
 
-        if int(matrice.notna().sum().sum()) >= 24:
+        if bool(regime.notna().all()):
 
-            st.subheader("🗓️ Pluviométrie mensuelle (mm)")
+            valeurs = [float(v) for v in regime.values]
 
-            fig = go.Figure(
-                go.Heatmap(
-                    z=matrice.values,
-                    x=MOIS,
-                    y=[int(a) for a in matrice.index],
-                    colorscale=ICE,
-                    xgap=2,
-                    ygap=1,
-                    colorbar=dict(title=dict(text="mm")),
-                    hovertemplate=(
-                        "%{y} · %{x}<br><b>%{z:.0f} mm</b>"
-                        "<extra></extra>"
-                    )
-                )
+            plus_pluvieux = sorted(
+                sorted(range(12), key=lambda m: valeurs[m])[-2:]
             )
-
-            fig.update_yaxes(autorange="reversed")
-            fig.update_layout(height=460)
-
-        else:
-
-            st.subheader("📈 Précipitations journalières")
 
             fig = go.Figure(
                 go.Bar(
-                    x=donnees["Date"],
-                    y=donnees["Précipitations (mm)"],
+                    x=MOIS,
+                    y=valeurs,
                     marker=dict(
-                        color=donnees["Précipitations (mm)"],
-                        colorscale=ICE
+                        color=[
+                            AMBRE if m in plus_pluvieux else BLEU
+                            for m in range(12)
+                        ]
                     )
                 )
             )
 
             fig.update_layout(
-                xaxis_title="Date",
-                yaxis_title="Précipitations (mm)",
-                height=460
+                yaxis_title="mm / mois",
+                height=380,
+                showlegend=False
             )
 
-        tracer(fig)
+            tracer(fig)
+
+            st.caption(
+                "Hauteur de pluie moyenne par mois. En orange, les deux "
+                f"mois les plus pluvieux ({MOIS_LONGS[plus_pluvieux[0]]} et "
+                f"{MOIS_LONGS[plus_pluvieux[1]]}) : ce sont ceux où le "
+                "drainage est le plus sollicité et où un chantier perd le "
+                "plus de jours."
+            )
+
+        else:
+
+            fig = go.Figure(
+                go.Bar(
+                    x=donnees["Date"],
+                    y=donnees["Précipitations (mm)"],
+                    marker=dict(color=BLEU)
+                )
+            )
+
+            fig.update_layout(
+                yaxis_title="mm / jour",
+                height=380,
+                showlegend=False
+            )
+
+            tracer(fig)
+
+            st.caption(
+                "Pluies journalières de la période. Il faut au moins un an "
+                "de données pour voir le rythme des saisons."
+            )
 
     with droite:
 
-        if bool(regime.notna().all()):
-
-            st.subheader("🌦️ Régime pluviométrique moyen")
-
-            valeurs = regime.values
-
-            fig_regime = go.Figure(
-                go.Bar(
-                    x=MOIS,
-                    y=valeurs,
-                    marker=dict(
-                        color=valeurs,
-                        colorscale=ICE,
-                        showscale=False
-                    )
-                )
-            )
-
-            fig_regime.add_hline(
-                y=float(valeurs.mean()),
-                line_dash="dash",
-                line_color=AMBRE,
-                annotation_text="moyenne mensuelle"
-            )
-
-            fig_regime.update_layout(yaxis_title="mm / mois", height=460)
-
-        else:
-
-            st.subheader("📉 Précipitations cumulées")
-
-            fig_regime = go.Figure(
-                go.Scatter(
-                    x=donnees["Date"],
-                    y=donnees["Précipitations (mm)"].fillna(0).cumsum(),
-                    mode="lines+markers",
-                    fill="tozeroy"
-                )
-            )
-
-            fig_regime.update_layout(
-                yaxis_title="Cumul (mm)",
-                height=460
-            )
-
-        tracer(fig_regime)
-
-    bas_gauche, bas_droite = st.columns([2, 1])
-
-    annuel = cumul_annuel(donnees)
-
-    with bas_gauche:
-
-        if len(annuel) >= 2:
-
-            st.subheader("📊 Pluie annuelle")
-
-            fig_annuel = go.Figure(
-                go.Bar(
-                    x=annuel["annee"],
-                    y=annuel["cumul"],
-                    marker=dict(
-                        color=annuel["cumul"],
-                        colorscale=ICE,
-                        showscale=False
-                    )
-                )
-            )
-
-            moyenne_annuelle = float(annuel["cumul"].mean())
-
-            fig_annuel.add_hline(
-                y=moyenne_annuelle,
-                line_dash="dash",
-                line_color=AMBRE,
-                annotation_text=f"moyenne : {moyenne_annuelle:,.0f} mm"
-            )
-
-            fig_annuel.update_layout(
-                xaxis_title="Année",
-                yaxis_title="mm / an"
-            )
-
-            tracer(fig_annuel)
-
-        else:
-
-            st.subheader("📋 Aperçu des données")
-
-            st.dataframe(
-                dates_lisibles(donnees),
-                width="stretch",
-                hide_index=True
-            )
-
-    with bas_droite:
-
-        st.subheader("⚡ Journées les plus pluvieuses")
+        st.markdown("**Les 5 journées les plus pluvieuses**")
 
         st.dataframe(
             jours_extremes(donnees, 5),
@@ -1757,23 +1902,32 @@ if menu == "🏠 Tableau de bord":
             hide_index=True
         )
 
-    if len(annuel) >= 2:
+        st.caption(
+            "Ces pluies extrêmes servent de repère pour dimensionner "
+            "les ouvrages."
+        )
 
-        with st.expander("📋 Aperçu des données"):
+    b1, b2, _ = st.columns([1, 1.4, 1.6])
 
-            st.dataframe(
-                dates_lisibles(donnees),
-                width="stretch",
-                hide_index=True
-            )
+    b1.button(
+        "Changer de ville →",
+        on_click=aller_a,
+        args=("Collecte des données",)
+    )
+
+    b2.button(
+        "Voir le dimensionnement d'un caniveau →",
+        on_click=aller_a,
+        args=("Génie Civil",)
+    )
 
 # ==========================================
 # COLLECTE DES DONNEES REELLES
 # ==========================================
 
-elif menu == "🌍 Collecte des données":
+elif menu == "Collecte des données":
 
-    st.title("🌍 Collecte des données météorologiques")
+    st.title("Collecte des données météorologiques")
 
     st.markdown(
         "### Récupération des précipitations historiques"
@@ -1783,18 +1937,21 @@ elif menu == "🌍 Collecte des données":
         "Source : Open-Meteo Historical Weather API"
     )
 
-    st.subheader("📍 Localisation")
+    st.subheader("Localisation")
 
     ville = st.selectbox(
         "Choisissez une ville",
-        ["Yaoundé", "Douala", "Bafoussam", "Garoua"]
+        list(VILLES)
+    )
+
+    st.caption(
+        "Jeux pré-collectés de secours disponibles pour : "
+        f"{', '.join(villes_secours()) or 'aucune ville'}."
     )
 
     coordonnees = {
-        "Yaoundé": (3.87, 11.52),
-        "Douala": (4.05, 9.70),
-        "Bafoussam": (5.48, 10.42),
-        "Garoua": (9.30, 13.40)
+        nom: (infos["latitude"], infos["longitude"])
+        for nom, infos in VILLES.items()
     }
 
     latitude, longitude = coordonnees[ville]
@@ -1802,7 +1959,7 @@ elif menu == "🌍 Collecte des données":
     st.write(f"Latitude : {latitude}")
     st.write(f"Longitude : {longitude}")
 
-    st.subheader("📅 Période d'analyse")
+    st.subheader("Période d'analyse")
 
     col1, col2 = st.columns(2)
 
@@ -1825,10 +1982,10 @@ elif menu == "🌍 Collecte des données":
     duree_ans = ((date_fin - date_debut).days + 1) / 365.25
 
     if duree_ans >= 30:
-        st.caption(f"Durée choisie : {duree_ans:.1f} ans.")
+        st.caption(f"Durée choisie : {nombre(duree_ans, 1)} ans.")
     else:
         st.caption(
-            f"Durée choisie : {duree_ans:.1f} ans "
+            f"Durée choisie : {nombre(duree_ans, 1)} ans "
             "(moins de 30 ans : insuffisant pour estimer des "
             "périodes de retour de 50 ou 100 ans)."
         )
@@ -1839,7 +1996,7 @@ elif menu == "🌍 Collecte des données":
         "pas encore publiés par Open-Meteo."
     )
 
-    if st.button("🚀 Lancer la collecte", type="primary"):
+    if st.button("Lancer la collecte", type="primary"):
 
         if date_debut > date_fin:
             st.error("La date de début doit précéder la date de fin.")
@@ -1884,7 +2041,7 @@ elif menu == "🌍 Collecte des données":
                     )
 
                     if donnees_valides:
-                        st.success("✅ Collecte terminée avec succès !")
+                        st.success("Collecte terminée avec succès !")
 
                     else:
                         st.error(
@@ -1902,30 +2059,22 @@ elif menu == "🌍 Collecte des données":
 
                 st.error(f"Erreur de collecte : {erreur_collecte}")
 
-                if ville == VILLE_SECOURS:
+                try:
+                    jeu_secours = charger_secours(ville, date_debut, date_fin)
+                    enregistrer_collecte(
+                        jeu_secours,
+                        meta_secours(jeu_secours)
+                    )
+                    st.warning(
+                        "Open-Meteo est injoignable : le jeu de données "
+                        f"pré-collecté de {ville} a été chargé pour la "
+                        "période demandée."
+                    )
 
-                    try:
-                        jeu_secours = charger_secours(date_debut, date_fin)
-                        enregistrer_collecte(
-                            jeu_secours,
-                            meta_secours(jeu_secours)
-                        )
-                        st.warning(
-                            "⚠️ Open-Meteo est injoignable : le jeu de "
-                            "données de secours pré-collecté a été chargé "
-                            "pour la période demandée."
-                        )
-
-                    except Exception as erreur_secours:
-                        st.info(
-                            "Le jeu de secours n'a pas pu remplacer "
-                            f"cette collecte : {erreur_secours}"
-                        )
-
-                else:
+                except Exception as erreur_secours:
                     st.info(
-                        "Le jeu de secours ne concerne que "
-                        f"{VILLE_SECOURS}."
+                        "Le jeu pré-collecté n'a pas pu remplacer cette "
+                        f"collecte : {erreur_secours}"
                     )
 
     if "donnees_reelles" in st.session_state:
@@ -1933,7 +2082,7 @@ elif menu == "🌍 Collecte des données":
         df = st.session_state["donnees_reelles"]
         meta = st.session_state["meta"]
 
-        st.subheader("📋 Données collectées")
+        st.subheader("Données collectées")
 
         bandeau_origine()
 
@@ -1951,9 +2100,13 @@ elif menu == "🌍 Collecte des données":
         )
 
         st.download_button(
-            "📥 Télécharger les données CSV",
+            "Télécharger les données CSV",
             data=df.to_csv(index=False).encode("utf-8-sig"),
-            file_name="hydrostat_precipitations.csv",
+            file_name=nom_fichier_csv(
+                meta["ville"],
+                meta["date_debut"],
+                meta["date_fin"]
+            ),
             mime="text/csv"
         )
 
@@ -1961,9 +2114,9 @@ elif menu == "🌍 Collecte des données":
 # AUTRES PAGES
 # ==========================================
 
-elif menu == "📋 Données brutes":
+elif menu == "Données brutes":
 
-    st.title("📋 Données pluviométriques brutes")
+    st.title("Données pluviométriques brutes")
 
     st.markdown(
         "### Réponse de l'API telle que reçue, avant tout traitement"
@@ -1981,7 +2134,7 @@ elif menu == "📋 Données brutes":
         dates_brutes = reponse["daily"]["time"]
         pluies_brutes = reponse["daily"]["precipitation_sum"]
 
-        st.subheader("🧾 Fiche de la collecte")
+        st.subheader("Fiche de la collecte")
 
         m1, m2, m3, m4 = st.columns(4)
 
@@ -1999,7 +2152,7 @@ elif menu == "📋 Données brutes":
             f"**Collecté le :** {meta['date_collecte']}"
         )
 
-        st.subheader("🧾 Texte brut de la réponse (JSON)")
+        st.subheader("Texte brut de la réponse (JSON)")
 
         st.caption(
             "Aperçu : les 10 premières valeurs de chaque liste. "
@@ -2019,7 +2172,7 @@ elif menu == "📋 Données brutes":
 
         st.json(apercu, expanded=True)
 
-        st.subheader("📋 Valeurs reçues, jour par jour")
+        st.subheader("Valeurs reçues, jour par jour")
 
         st.dataframe(
             pd.DataFrame({
@@ -2036,12 +2189,12 @@ elif menu == "📋 Données brutes":
                 "de l'analyse : voir « Qualité des données »."
             )
         else:
-            st.success("✅ Aucune anomalie dans les données reçues.")
+            st.success("Aucune anomalie dans les données reçues.")
 
-        st.subheader("📥 Téléchargements")
+        st.subheader("Téléchargements")
 
         st.download_button(
-            label="📥 Réponse complète de l'API (JSON)",
+            label="Réponse complète de l'API (JSON)",
             data=json.dumps(
                 reponse,
                 ensure_ascii=False,
@@ -2054,7 +2207,7 @@ elif menu == "📋 Données brutes":
         if "donnees_reelles" in st.session_state:
 
             st.download_button(
-                label="📥 Données valides (CSV)",
+                label="Données valides (CSV)",
                 data=st.session_state["donnees_reelles"]
                     .to_csv(index=False)
                     .encode("utf-8-sig"),
@@ -2069,9 +2222,9 @@ elif menu == "📋 Données brutes":
             "Effectuez d'abord une collecte."
         )
 
-elif menu == "🧹 Qualité des données":
+elif menu == "Qualité des données":
 
-    st.title("🧹 Qualité des données")
+    st.title("Qualité des données")
 
     if "reponse_api" in st.session_state:
 
@@ -2086,7 +2239,7 @@ elif menu == "🧹 Qualité des données":
         recues = len(st.session_state["reponse_api"]["daily"]["time"])
         valides = len(st.session_state.get("donnees_valides", []))
 
-        st.subheader("🔍 Contrôle de qualité")
+        st.subheader("Contrôle de qualité")
 
         col1, col2, col3 = st.columns(3)
 
@@ -2113,7 +2266,7 @@ elif menu == "🧹 Qualité des données":
 
         if anomalies:
 
-            st.subheader("⚠️ Anomalies détectées (écartées de l'analyse)")
+            st.subheader("Anomalies détectées (écartées de l'analyse)")
 
             st.dataframe(
                 pd.DataFrame(
@@ -2136,7 +2289,7 @@ elif menu == "🧹 Qualité des données":
 
         if "donnees_reelles" in st.session_state:
 
-            st.subheader("📊 Statistiques descriptives (données valides)")
+            st.subheader("Statistiques descriptives (données valides)")
 
             st.dataframe(
                 st.session_state["donnees_reelles"].describe(),
@@ -2145,9 +2298,9 @@ elif menu == "🧹 Qualité des données":
 
     else:
         st.warning("Veuillez d'abord collecter des données.")
-elif menu == "📊 Statistiques":
+elif menu == "Statistiques":
 
-    st.title("📊 Analyse statistique des précipitations")
+    st.title("Analyse statistique des précipitations")
 
     if "donnees_valides" in st.session_state:
 
@@ -2158,7 +2311,7 @@ elif menu == "📊 Statistiques":
             afficher=False
         )
 
-        st.subheader("📈 Indicateurs statistiques")
+        st.subheader("Indicateurs statistiques")
 
         c1, c2, c3 = st.columns(3)
 
@@ -2172,7 +2325,7 @@ elif menu == "📊 Statistiques":
         c5.metric("Minimum", formater(res["minimum"]))
         c6.metric("Maximum", formater(res["maximum"]))
 
-        st.subheader("📊 Distribution des précipitations")
+        st.subheader("Distribution des précipitations")
 
         fig = px.histogram(
             df,
@@ -2185,7 +2338,7 @@ elif menu == "📊 Statistiques":
 
         tracer(fig, width="stretch")
 
-        st.subheader("📋 Résumé statistique")
+        st.subheader("Résumé statistique")
 
         st.dataframe(
             df["Précipitations (mm)"].describe().to_frame("Valeur"),
@@ -2194,13 +2347,13 @@ elif menu == "📊 Statistiques":
 
     else:
         st.warning("Veuillez d'abord collecter des données.")
-elif menu == "🎲 Probabilités":
+elif menu == "Probabilités":
 
-    st.title("🎲 Analyse probabiliste des précipitations")
+    st.title("Analyse probabiliste des précipitations")
 
     if "donnees_valides" in st.session_state:
 
-        st.subheader("📊 Probabilités empiriques")
+        st.subheader("Probabilités empiriques")
 
         seuil = st.number_input(
             "Seuil de précipitations (mm)",
@@ -2220,12 +2373,12 @@ elif menu == "🎲 Probabilités":
 
         c1.metric(
             f"Probabilité d'un jour pluvieux (≥ {SEUIL_JOUR_PLUVIEUX:g} mm)",
-            f"{res['probabilite_pluie'] * 100:.2f} %"
+            f"{nombre(res['probabilite_pluie'] * 100, 2)} %"
         )
 
         c2.metric(
             "Probabilité de dépasser le seuil",
-            f"{res['probabilite_depassement'] * 100:.2f} %"
+            f"{nombre(res['probabilite_depassement'] * 100, 2)} %"
         )
 
         q1, q2, q3 = st.columns(3)
@@ -2234,7 +2387,7 @@ elif menu == "🎲 Probabilités":
         q2.metric("Quantile 90 %", formater(res["quantile_90"]))
         q3.metric("Quantile 95 %", formater(res["quantile_95"]))
 
-        st.subheader("📈 Fonction de répartition empirique")
+        st.subheader("Fonction de répartition empirique")
 
         repartition = res["repartition"]
 
@@ -2274,9 +2427,9 @@ elif menu == "🎲 Probabilités":
 
     else:
         st.warning("Veuillez d'abord collecter des données.")
-elif menu == "📐 Inférence":
+elif menu == "Inférence":
 
-    st.title("📐 Inférence statistique")
+    st.title("Inférence statistique")
 
     if "donnees_valides" in st.session_state:
 
@@ -2301,7 +2454,7 @@ elif menu == "📐 Inférence":
 
         if res is not None:
 
-            st.subheader("📊 Estimation statistique")
+            st.subheader("Estimation statistique")
 
             c1, c2, c3 = st.columns(3)
 
@@ -2309,20 +2462,20 @@ elif menu == "📐 Inférence":
             c2.metric("Moyenne", formater(res["moyenne"], decimales=3))
             c3.metric("Écart-type", formater(res["ecart_type"], decimales=3))
 
-            st.subheader("📏 Intervalle de confiance")
+            st.subheader("Intervalle de confiance")
 
             st.success(
                 f"IC à {niveau}% : "
-                f"[{res['borne_inferieure']:.3f} ; "
-                f"{res['borne_superieure']:.3f}] mm"
+                f"[{nombre(res['borne_inferieure'], 3)} ; "
+                f"{nombre(res['borne_superieure'], 3)}] mm"
             )
 
-            st.subheader("🧪 Test d'hypothèse")
+            st.subheader("Test d'hypothèse")
 
             if res["test_possible"]:
 
-                st.write(f"Statistique t : {res['t_statistique']:.4f}")
-                st.write(f"p-value : {res['p_value']:.4f}")
+                st.write(f"Statistique t : {nombre(res['t_statistique'], 4)}")
+                st.write(f"p-value : {nombre(res['p_value'], 4)}")
 
                 if res["rejet_h0"]:
                     st.error(
@@ -2354,11 +2507,11 @@ elif menu == "📐 Inférence":
         st.warning(
             "Veuillez d'abord collecter des données."
         )
-elif menu == "📈 Valeurs extrêmes":
+elif menu == "Valeurs extrêmes":
 
     afficher_valeurs_extremes()
 
-elif menu == "🏗️ Génie Civil":
+elif menu == "Génie Civil":
 
     afficher_genie_civil()
 else:

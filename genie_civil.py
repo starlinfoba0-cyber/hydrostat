@@ -178,6 +178,24 @@ def largeur_minimale(debit, hauteur, pente, strickler, largeur_max=1000.0):
     return (bas + haut) / 2
 
 
+def pente_minimale(debit, largeur, hauteur, strickler):
+    """
+    Plus petite pente (m/m) pour qu'un caniveau rectangulaire de hauteur
+    d'eau `hauteur` écoule `debit` (m³/s). On inverse Manning-Strickler :
+        I = (Q / (Ks · S · R^(2/3)))²
+    """
+    if debit < 0:
+        raise ValueError("Le débit ne peut pas être négatif.")
+
+    if largeur <= 0 or hauteur <= 0 or strickler <= 0:
+        raise ValueError("Les dimensions et Strickler doivent être positifs.")
+
+    section = largeur * hauteur
+    rayon = section / (largeur + 2 * hauteur)
+
+    return (debit / (strickler * section * rayon ** (2 / 3))) ** 2
+
+
 def verifier_caniveau(debit_projet, largeur, hauteur, pente, strickler):
     """
     Compare le débit de projet à la capacité du caniveau (à pleine hauteur).

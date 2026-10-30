@@ -10,6 +10,11 @@ MOIS = [
     "Juil.", "Août", "Sept.", "Oct.", "Nov.", "Déc."
 ]
 
+MOIS_LONGS = [
+    "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre"
+]
+
 COUVERTURE_MIN = 0.9    # un mois ou une année est « complet » à 90 % de jours valides
 
 

@@ -116,3 +116,107 @@ def mediane_par_mois_de_demarrage(df, seuil, duree_mois):
         )
 
     return pd.Series(medianes)
+
+
+# Types de travaux sensibles à la pluie : (nom, seuil indicatif en mm/jour, mesures possibles).
+# Les seuils sont des valeurs indicatives choisies pour l'exemple : à adapter au chantier.
+TRAVAUX = [
+    (
+        "Terrassement et fouilles", 10.0,
+        "protéger les fouilles par un drainage provisoire et des bâches ; "
+        "regrouper les gros mouvements de terre dans les mois les plus secs."
+    ),
+    (
+        "Bétonnage (coulage)", 5.0,
+        "prévoir des bâches, ne couler qu'après une prévision météo favorable "
+        "et protéger le béton frais de la pluie."
+    ),
+    (
+        "Maçonnerie et fondations", 10.0,
+        "évacuer l'eau des fouilles avant de maçonner et couvrir les murs frais "
+        "en fin de journée."
+    ),
+    (
+        "Couverture et étanchéité", 2.0,
+        "réserver ces travaux aux mois les plus secs et prévoir une protection "
+        "provisoire du bâtiment."
+    ),
+    (
+        "Enduits et peinture extérieurs", 5.0,
+        "reporter aux mois secs et protéger les façades fraîches de la pluie."
+    ),
+]
+
+SEUIL_FAVORABLE = 75
+SEUIL_CONDITIONS = 50
+
+
+def niveau_score(score):
+    """Favorable (75 et plus), Sous conditions (50 à 74), Déconseillé (moins de 50)."""
+    if score is None:
+        return "Données insuffisantes"
+
+    if score >= SEUIL_FAVORABLE:
+        return "Favorable"
+
+    if score >= SEUIL_CONDITIONS:
+        return "Sous conditions"
+
+    return "Déconseillé"
+
+
+def classement_travaux(df, mois_debut, duree_mois, seuils=None):
+    """
+    Classe les types de travaux pour un chantier commençant le 1er du mois
+    `mois_debut` et durant `duree_mois` mois.
+
+    Score = part des jours où la pluie ne bloque pas ces travaux (sur 100).
+    Les jours perdus sont la médiane des années historiques (au moins 10
+    années) ; à défaut, la somme des moyennes mensuelles.
+    """
+    seuils = seuils or {}
+    jours_fenetre = duree_mois * 30.44
+    mois_fenetre = [((mois_debut - 1 + k) % 12) + 1 for k in range(duree_mois)]
+
+    resultats = []
+
+    for nom, seuil_defaut, mesure in TRAVAUX:
+
+        seuil = seuils.get(nom, seuil_defaut)
+        resume = resume_fenetre(
+            fenetre_jours_perdus(df, seuil, mois_debut, duree_mois)
+        )
+
+        if resume is not None:
+            perdus = resume["mediane"]
+            methode = f"médiane de {resume['annees']} années"
+
+        else:
+            par_mois = jours_perdus_par_mois(df, seuil)
+            valeurs = [par_mois[m] for m in mois_fenetre]
+
+            if any(pd.isna(v) for v in valeurs):
+                perdus, methode = None, "données insuffisantes"
+            else:
+                perdus = float(sum(valeurs))
+                methode = "moyenne mensuelle"
+
+        if perdus is None:
+            score = None
+        else:
+            score = int(round(max(0.0, min(100.0, 100 * (1 - perdus / jours_fenetre)))))
+
+        resultats.append({
+            "nom": nom,
+            "seuil": seuil,
+            "perdus": perdus,
+            "jours_fenetre": jours_fenetre,
+            "score": score,
+            "niveau": niveau_score(score),
+            "methode": methode,
+            "mesure": mesure
+        })
+
+    resultats.sort(key=lambda r: -1 if r["score"] is None else r["score"], reverse=True)
+
+    return resultats
